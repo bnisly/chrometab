@@ -447,7 +447,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- Inspired by the Python version [chrometab](https://github.com/cumulus13/chrometab)
+- Inspired by the Python version [chrometab](https://github.com/cumulus13/chrometab-py)
 - Go version [chrometab-go](https://github.com/cumulus13/chrometab-go)
 - Built with [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/)
 - Uses [tokio](https://tokio.rs/) async runtime
@@ -455,7 +455,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Related Projects
 
-- [chrometab (Python)](https://github.com/cumulus13/chrometab) - Original Python version
+- [chrometab (Python)](https://github.com/cumulus13/chrometab-py) - Original Python version
 - [chrometab-go](https://github.com/cumulus13/chrometab-go) - Go version
 
 ## Comparison with Other Versions
