@@ -84,6 +84,21 @@ sudo pacman -S xdotool        # Arch
 
 **macOS**: Grant Terminal accessibility permissions in System Preferences
 
+### Using with Brave
+
+ChromeTab works with **Brave** (and any Chromium-based browser) the same way as Chrome. Brave uses the same Chrome DevTools Protocol.
+
+1. **Launch Brave with remote debugging:**
+   - **macOS**: `/Applications/Brave\ Browser.app/Contents/MacOS/Brave\ Browser --remote-debugging-port=9222`
+   - **Linux**: `brave-browser --remote-debugging-port=9222` (or `brave --remote-debugging-port=9222` depending on your install)
+   - **Windows**: `brave.exe --remote-debugging-port=9222`
+
+2. Run `chrometab` as usual. With the default `--browser auto`, the tool detects Brave from the CDP version response and brings the Brave window to front when you activate a tab.
+
+3. To force Brave (e.g. if auto-detection fails), use: `chrometab --browser brave --list`
+
+You can also set the `CHROMETAB_BROWSER` environment variable to `chrome`, `brave`, or `auto`.
+
 ## Usage
 
 ### Basic Commands
@@ -139,6 +154,7 @@ OPTIONS:
     --find-duplicate        Find and list tabs with duplicate URLs
     -u, --url <URL>         Open a new tab with the specified URL
     -f, --force <PLATFORM>  Force platform for window activation (windows/linux/darwin)
+    --browser <chrome|brave|auto>  Browser for window activation [default: auto] [env: CHROMETAB_BROWSER]
     --host <HOST>           Chrome remote debugging host [env: CHROME_REMOTE_DEBUGGING_HOST]
     --port <PORT>           Chrome remote debugging port [env: CHROME_REMOTE_DEBUGGING_PORT]
     --debug                 Enable debug output
