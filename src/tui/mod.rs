@@ -4,8 +4,9 @@ pub mod events;
 pub mod export;
 pub mod ui;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
+use std::time::Duration;
 use anyhow::Result;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -37,6 +38,18 @@ impl ViewMode {
             ViewMode::Flat => "Flat",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortMode {
+    BrowserOrder,
+    OldestFirst,
+    NewestFirst,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgeFilterDialog {
+    pub input: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +93,9 @@ pub struct App {
     pub should_quit: bool,
     pub group_list_state: ListState,
     pub tab_list_state: ListState,
+    pub tab_ages: HashMap<String, Duration>,
+    pub sort_mode: SortMode,
+    pub age_filter_dialog: Option<AgeFilterDialog>,
 }
 
 impl App {
@@ -113,6 +129,9 @@ impl App {
             should_quit: false,
             group_list_state,
             tab_list_state,
+            tab_ages: HashMap::new(),
+            sort_mode: SortMode::BrowserOrder,
+            age_filter_dialog: None,
         }
     }
 
@@ -122,6 +141,7 @@ impl App {
             ViewMode::Flat => ViewMode::Grouped,
         };
         self.display_groups = self.make_display_groups();
+        self.apply_sort();
         self.selected_group = 0;
         let has_group = !self.display_groups.is_empty();
         self.group_list_state.select(if has_group { Some(0) } else { None });
@@ -233,6 +253,7 @@ impl App {
         self.tabs = tabs;
         self.groups = group_tabs(&self.tabs);
         self.display_groups = self.make_display_groups();
+        self.apply_sort();
         let ng = self.display_groups.len();
         if ng == 0 {
             self.selected_group = 0;
@@ -254,12 +275,146 @@ impl App {
             self.tab_list_state.select(Some(self.selected_tab));
         }
     }
+
+    /// Sort tab_indices within each display_group by the current sort_mode.
+    /// Does nothing when sort_mode is BrowserOrder.
+    pub fn apply_sort(&mut self) {
+        if self.sort_mode == SortMode::BrowserOrder {
+            return;
+        }
+        let sort_mode = self.sort_mode;
+        let tab_ages = &self.tab_ages;
+        let tabs = &self.tabs;
+        for group in &mut self.display_groups {
+            group.tab_indices.sort_by(|&a, &b| {
+                let age_a = tabs
+                    .get(a)
+                    .and_then(|t| tab_ages.get(&t.target_id))
+                    .copied();
+                let age_b = tabs
+                    .get(b)
+                    .and_then(|t| tab_ages.get(&t.target_id))
+                    .copied();
+                match (age_a, age_b) {
+                    (None, None) => std::cmp::Ordering::Equal,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (Some(a_dur), Some(b_dur)) => match sort_mode {
+                        SortMode::OldestFirst => b_dur.cmp(&a_dur),
+                        SortMode::NewestFirst => a_dur.cmp(&b_dur),
+                        SortMode::BrowserOrder => std::cmp::Ordering::Equal,
+                    },
+                }
+            });
+        }
+    }
+
+    /// Advance sort_mode by one step and re-sort display_groups.
+    pub fn cycle_sort(&mut self) {
+        self.sort_mode = match self.sort_mode {
+            SortMode::BrowserOrder => SortMode::OldestFirst,
+            SortMode::OldestFirst => SortMode::NewestFirst,
+            SortMode::NewestFirst => SortMode::BrowserOrder,
+        };
+        // Rebuild from browser order first, then apply new sort.
+        self.display_groups = self.make_display_groups();
+        self.apply_sort();
+    }
+
+    /// Insert into selected_tab_ids all tabs whose age exceeds `threshold`.
+    pub fn select_older_than(&mut self, threshold: Duration) {
+        for tab in &self.tabs {
+            if let Some(&age) = self.tab_ages.get(&tab.target_id) {
+                if age > threshold {
+                    self.selected_tab_ids.insert(tab.target_id.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Parse age threshold strings like "30m", "12h", "7d" into a Duration.
+pub fn parse_age_threshold(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (num_str, unit) = if let Some(n) = s.strip_suffix('d') {
+        (n, 'd')
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 'h')
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 'm')
+    } else {
+        return None;
+    };
+    let n: u64 = num_str.trim().parse().ok()?;
+    let secs = match unit {
+        'm' => n * 60,
+        'h' => n * 3600,
+        'd' => n * 86400,
+        _ => return None,
+    };
+    Some(Duration::from_secs(secs))
+}
+
+/// Compact age label — always 3 characters: "now", "30m", " 4h", " 7d".
+pub fn format_age_short(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        "now".to_string()
+    } else if secs < 3600 {
+        format!("{:2}m", (secs / 60).min(99))
+    } else if secs < 86400 {
+        format!("{:2}h", (secs / 3600).min(99))
+    } else {
+        format!("{:2}d", (secs / 86400).min(99))
+    }
+}
+
+/// Verbose age label for the details panel.
+pub fn format_age_long(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        let m = secs / 60;
+        format!("{} minute{}", m, if m == 1 { "" } else { "s" })
+    } else if secs < 86400 {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        if m > 0 {
+            format!(
+                "{} hour{} {} minute{}",
+                h, if h == 1 { "" } else { "s" },
+                m, if m == 1 { "" } else { "s" }
+            )
+        } else {
+            format!("{} hour{}", h, if h == 1 { "" } else { "s" })
+        }
+    } else {
+        let d = secs / 86400;
+        let h = (secs % 86400) / 3600;
+        if h > 0 {
+            format!(
+                "{} day{} {} hour{}",
+                d, if d == 1 { "" } else { "s" },
+                h, if h == 1 { "" } else { "s" }
+            )
+        } else {
+            format!("{} day{}", d, if d == 1 { "" } else { "s" })
+        }
+    }
 }
 
 /// Entry point for TUI mode.
 pub async fn run(client: &ChromeClient, browser: BrowserKind) -> Result<()> {
     let tabs = client.get_tabs(false).await?;
     let mut app = App::new(tabs, browser);
+
+    // Fetch initial tab ages in parallel (best-effort; failures yield no age data).
+    let ages = ChromeClient::fetch_all_ages(&app.tabs).await;
+    app.tab_ages = ages;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

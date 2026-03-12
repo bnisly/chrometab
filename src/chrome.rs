@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 
@@ -16,6 +17,8 @@ pub struct Tab {
     pub tab_type: Option<String>,
     #[serde(rename = "browserContextId")]
     pub browser_context_id: Option<String>,
+    #[serde(rename = "webSocketDebuggerUrl", default)]
+    pub debugger_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -117,6 +120,81 @@ impl ChromeClient {
         write.send(Message::Text(serde_json::to_string(&command)?)).await?;
         let _ = read.next().await.context("No response")??;
         Ok(())
+    }
+
+    /// Fetch `performance.timing.navigationStart` (ms since epoch) from a tab's
+    /// own WebSocket debugger URL. Returns `None` on any error or unsupported page.
+    pub async fn fetch_navigation_start(debugger_url: &str) -> Option<u64> {
+        let (ws_stream, _) = connect_async(debugger_url).await.ok()?;
+        let (mut write, mut read) = ws_stream.split();
+
+        let command = CDPCommand {
+            id: 1,
+            method: "Runtime.evaluate".to_string(),
+            params: Some(serde_json::json!({
+                "expression": "performance.timing.navigationStart",
+                "returnByValue": true,
+            })),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&command).ok()?))
+            .await
+            .ok()?;
+
+        let msg = match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            read.next(),
+        )
+        .await
+        {
+            Ok(Some(Ok(m))) => m,
+            _ => return None,
+        };
+
+        let text = msg.to_text().ok()?;
+        let v: serde_json::Value = serde_json::from_str(text).ok()?;
+        let nav_start = v["result"]["result"]["value"].as_f64()?;
+        if nav_start > 0.0 {
+            Some(nav_start as u64)
+        } else {
+            None
+        }
+    }
+
+    /// Fetch ages for all tabs in parallel. Returns a map of target_id → age.
+    pub async fn fetch_all_ages(tabs: &[Tab]) -> HashMap<String, std::time::Duration> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let futures: Vec<_> = tabs
+            .iter()
+            .filter_map(|tab| {
+                tab.debugger_url.as_ref().map(|url| {
+                    let target_id = tab.target_id.clone();
+                    let url = url.clone();
+                    async move {
+                        let nav_start =
+                            ChromeClient::fetch_navigation_start(&url).await?;
+                        if nav_start > 0 && now_ms >= nav_start {
+                            Some((
+                                target_id,
+                                std::time::Duration::from_millis(now_ms - nav_start),
+                            ))
+                        } else {
+                            None
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        futures_util::future::join_all(futures)
+            .await
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     pub async fn open_new_tab(&self, url: &str) -> Result<()> {

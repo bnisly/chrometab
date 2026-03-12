@@ -3,7 +3,7 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::chrome::ChromeClient;
-use super::{App, ExportDialog, ExportFormat, ExportStep, Panel};
+use super::{AgeFilterDialog, App, ExportDialog, ExportFormat, ExportStep, Panel, SortMode};
 
 pub async fn handle_key(app: &mut App, client: &ChromeClient, key: KeyEvent) -> Result<()> {
     // Help overlay: any key closes it
@@ -25,6 +25,12 @@ pub async fn handle_key(app: &mut App, client: &ChromeClient, key: KeyEvent) -> 
     // Filter mode
     if app.filter_mode {
         handle_filter_key(app, key);
+        return Ok(());
+    }
+
+    // Age filter dialog
+    if app.age_filter_dialog.is_some() {
+        handle_age_filter_key(app, key);
         return Ok(());
     }
 
@@ -219,12 +225,31 @@ async fn handle_normal_key(
             app.status_message = Some(format!("View: {}", app.view_mode.label()));
         }
 
+        // Cycle sort mode
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            app.cycle_sort();
+            let label = match app.sort_mode {
+                SortMode::BrowserOrder => "Browser order",
+                SortMode::OldestFirst => "Oldest first",
+                SortMode::NewestFirst => "Newest first",
+            };
+            app.status_message = Some(format!("Sort: {}", label));
+        }
+
+        // Age filter dialog
+        KeyCode::Char('t') | KeyCode::Char('T') => {
+            app.age_filter_dialog = Some(AgeFilterDialog { input: String::new() });
+        }
+
         // Refresh
         KeyCode::Char('r') | KeyCode::Char('R') => {
             match client.get_tabs(false).await {
                 Ok(tabs) => {
                     let count = tabs.len();
                     app.refresh(tabs);
+                    let ages = ChromeClient::fetch_all_ages(&app.tabs).await;
+                    app.tab_ages = ages;
+                    app.apply_sort();
                     app.status_message = Some(format!("Refreshed — {} tabs", count));
                 }
                 Err(e) => {
@@ -400,6 +425,49 @@ fn do_export(app: &App) -> Result<String> {
         ExportFormat::Markdown => {
             export_markdown(&app.groups, &app.tabs, ids, &dialog.path)
         }
+    }
+}
+
+fn handle_age_filter_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter => {
+            let input = app
+                .age_filter_dialog
+                .as_ref()
+                .map(|d| d.input.clone())
+                .unwrap_or_default();
+            app.age_filter_dialog = None;
+            match super::parse_age_threshold(&input) {
+                Some(threshold) => {
+                    let before = app.selected_tab_ids.len();
+                    app.select_older_than(threshold);
+                    let added = app.selected_tab_ids.len().saturating_sub(before);
+                    app.status_message =
+                        Some(format!("Selected {} tabs older than {}", added, input));
+                }
+                None => {
+                    app.status_message =
+                        Some("Invalid threshold — use e.g. 30m, 12h, 7d".to_string());
+                }
+            }
+        }
+        KeyCode::Esc => {
+            app.age_filter_dialog = None;
+        }
+        KeyCode::Backspace => {
+            if let Some(ref mut d) = app.age_filter_dialog {
+                d.input.pop();
+            }
+        }
+        KeyCode::Char(c)
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers == KeyModifiers::SHIFT =>
+        {
+            if let Some(ref mut d) = app.age_filter_dialog {
+                d.input.push(c);
+            }
+        }
+        _ => {}
     }
 }
 

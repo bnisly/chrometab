@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 use crate::groups::GroupKind;
-use super::{App, ExportStep, Panel};
+use super::{format_age_long, format_age_short, App, ExportStep, Panel, SortMode};
 
 const FOCUSED_BORDER: Style = Style::new()
     .fg(Color::Blue)
@@ -77,6 +77,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.confirm_close {
         render_confirm_close(f, app, area);
     }
+    if app.age_filter_dialog.is_some() {
+        render_age_filter_dialog(f, app, area);
+    }
 }
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
@@ -88,13 +91,20 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         .map(|g| g.name.as_str())
         .unwrap_or("");
 
+    let sort_label = match app.sort_mode {
+        SortMode::BrowserOrder => "",
+        SortMode::OldestFirst => "  [Oldest→]",
+        SortMode::NewestFirst => "  [Newest→]",
+    };
+
     let text = format!(
-        " ChromeTab v{}  [Tabs: {}]  [Sel: {}]  [{}]  [{}]",
+        " ChromeTab v{}  [Tabs: {}]  [Sel: {}]  [{}]  [{}]{}",
         env!("CARGO_PKG_VERSION"),
         total,
         selected,
         app.view_mode.label(),
-        group_name
+        group_name,
+        sort_label,
     );
 
     let header = Paragraph::new(text).style(HEADER_STYLE);
@@ -182,11 +192,21 @@ fn render_tabs(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(Color::DarkGray)
                 };
 
-                let title_display: String = title.chars().take(60).collect();
+                let age_str = app
+                    .tab_ages
+                    .get(&tab.target_id)
+                    .map(|&d| format!("{:>3}", format_age_short(d)))
+                    .unwrap_or_else(|| "   ".to_string());
+
+                let title_display: String = title.chars().take(55).collect();
                 let label = format!(" {:02}. {}", seq + 1, title_display);
 
                 let line = Line::from(vec![
                     Span::styled(checkbox, check_style),
+                    Span::styled(
+                        format!(" {} ", age_str),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                     Span::raw(label),
                 ]);
 
@@ -225,9 +245,14 @@ fn render_details(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "No"
             };
+            let age_str = app
+                .tab_ages
+                .get(&t.target_id)
+                .map(|&d| format_age_long(d))
+                .unwrap_or_else(|| "unknown".to_string());
             format!(
-                "Title:\n{}\n\nURL:\n{}\n\nType: {}\nGroup: {}\nSelected: {}",
-                t.title, t.url, tab_type, group_name, selected
+                "Title:\n{}\n\nURL:\n{}\n\nType: {}\nGroup: {}\nAge: {}\nSelected: {}",
+                t.title, t.url, tab_type, group_name, age_str, selected
             )
         }
     };
@@ -246,7 +271,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     } else if let Some(ref msg) = app.status_message {
         format!(" {}", msg)
     } else {
-        " Space=Sel  Enter=Activate  d=Close  b=Bookmark  /=Filter  v=View  r=Refresh  ?=Help  q=Quit"
+        " Space=Sel  Enter=Activate  d=Close  b=Bookmark  /=Filter  s=Sort  t=AgeFilter  v=View  r=Refresh  ?=Help  q=Quit"
             .to_string()
     };
 
@@ -306,6 +331,14 @@ fn render_help(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled(" v            ", Style::default().fg(Color::Yellow)),
             Span::raw("  Toggle grouped / flat view"),
+        ]),
+        Line::from(vec![
+            Span::styled(" s            ", Style::default().fg(Color::Yellow)),
+            Span::raw("  Sort by age"),
+        ]),
+        Line::from(vec![
+            Span::styled(" t            ", Style::default().fg(Color::Yellow)),
+            Span::raw("  Select tabs by age threshold"),
         ]),
         Line::from(vec![
             Span::styled(" r            ", Style::default().fg(Color::Yellow)),
@@ -400,6 +433,40 @@ fn render_export_dialog(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let paragraph = Paragraph::new(content).block(block).wrap(Wrap { trim: true });
+    f.render_widget(paragraph, popup_area);
+}
+
+fn render_age_filter_dialog(f: &mut Frame, app: &App, area: Rect) {
+    let dialog = match app.age_filter_dialog.as_ref() {
+        Some(d) => d,
+        None => return,
+    };
+
+    let popup_area = centered_rect(44, 35, area);
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Select by Age ")
+        .border_style(FOCUSED_BORDER);
+
+    let content = vec![
+        Line::from(""),
+        Line::from(" Select tabs older than:"),
+        Line::from(format!("  > {}█", dialog.input)),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  e.g. 30m, 12h, 7d",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Enter=select  Esc=cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let paragraph = Paragraph::new(content).block(block);
     f.render_widget(paragraph, popup_area);
 }
 
